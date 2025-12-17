@@ -1,0 +1,54 @@
+From c3ef40c2b63ad7785571802c4100581ebf228a1f Mon Sep 17 00:00:00 2001
+From: Steffen Nurpmeso <steffen@sdaoden.eu>
+Date: Thu, 4 Nov 2021 20:24:30 +0100
+Subject: [PATCH] a_sendout_transfer(): FIX *mta-bcc-ok* logic on follow lines!
+ (Andreas Teuber)
+
+---
+ src/mx/sendout.c | 22 ++++++++++++++--------
+ 1 file changed, 14 insertions(+), 8 deletions(-)
+
+diff --git a/src/mx/sendout.c b/src/mx/sendout.c
+index 71a62ef89d..d83edb777d 100644
+--- a/src/mx/sendout.c
++++ b/src/mx/sendout.c
+@@ -1362,7 +1362,7 @@ a_sendout_transfer(struct sendbundle *sbp, boole resent, boole *senderror){
+    input_save = sbp->sb_input;
+    if((resent || (sbp->sb_hp != NIL && sbp->sb_hp->h_bcc != NIL)) &&
+          !ok_blook(mta_bcc_ok)){
+-      boole inhdr;
++      boole inhdr, inskip;
+       uz bufsize, bcnt, llen;
+       char *buf;
+       FILE *fp;
+@@ -1379,17 +1379,23 @@ a_sendout_transfer(struct sendbundle *sbp, boole resent, boole *senderror){
+       mx_fs_linepool_aquire(&buf, &bufsize);
+       bcnt = fsize(input_save);
+       inhdr = TRU1;
++      inskip = FAL0;
+       while(fgetline(&buf, &bufsize, &bcnt, &llen, input_save, TRU1) != NIL){
+          if(inhdr){
+             if(llen == 1 && *buf == '\n')
+                inhdr = FAL0;
+-            /* (We need _case for resent only) */
+-            else if(su_cs_starts_with_case(buf, "bcc:"))
+-               continue;
+-            /* We yet do not generate that, but place the logic today */
+-            else if(resent && su_cs_starts_with_case(buf, "resent-bcc:"))
+-               continue;
+-
++            else{
++               if(inskip && *buf == ' ')
++                  continue;
++               inskip = FAL0;
++               /* (We need _case for resent only);
++                * xxx We do not resent that yet , but place the logic today */
++               if(su_cs_starts_with_case(buf, "bcc:") ||
++                     (resent && su_cs_starts_with_case(buf, "resent-bcc:"))){
++                  inskip = TRU1;
++                  continue;
++               }
++            }
+          }
+          if(fwrite(buf, 1, llen, fp) != llen)
+             goto jewritebcc;

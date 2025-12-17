@@ -1,6 +1,6 @@
 Name:           s-nail
 Version:        14.9.22
-Release:        6%{?dist}
+Release:        9%{?dist}
 Summary:        Environment for sending and receiving mail
 
 # Everything is ISC except parts coming from the original Heirloom mailx which are BSD
@@ -10,6 +10,11 @@ Source0:        https://www.sdaoden.eu/downloads/%{name}-%{version}.tar.xz
 Source1:        https://www.sdaoden.eu/downloads/%{name}-%{version}.tar.xz.asc
 # https://ftp.sdaoden.eu/steffen.asc
 Source2:        steffen.asc
+
+# rhbz#2103212
+Patch0:		s-nail-testsuite.patch
+# upstream commit https://github.com/sdaoden/s-mailx/commit/c3ef40c2b63ad7785571802c4100581ebf228a1f.patch
+Patch1:		s-nail-bcc-in-subject.patch
 
 BuildRequires: make
 BuildRequires:  gnupg2
@@ -137,6 +142,18 @@ fi
 
 
 %changelog
+* Wed Oct 29 2025 Tomas Korbar <tkorbar@redhat.com> - 14.9.22-9
+- Stop adding BCC lines to subject
+- Resolves: RHEL-110823
+
+* Mon Aug 29 2022 Tomas Korbar <tkorbar@redhat.com> - 14.9.22-8
+- Fix CI configuration
+- Related: rhbz#2103212
+
+* Fri Aug 26 2022 Tomas Korbar <tkorbar@redhat.com> - 14.9.22-7
+- Make s-nail testsuite use sha256
+- Resolves: rhbz#2103212
+
 * Tue Aug 10 2021 Mohan Boddu <mboddu@redhat.com> - 14.9.22-6
 - Rebuilt for IMA sigs, glibc 2.34, aarch64 flags
   Related: rhbz#1991688

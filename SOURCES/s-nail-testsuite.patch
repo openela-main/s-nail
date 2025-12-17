@@ -1,0 +1,41 @@
+diff --git a/mx-test.sh b/mx-test.sh
+index 4a26379..0cb9555 100755
+--- a/mx-test.sh
++++ b/mx-test.sh
+@@ -10017,7 +10017,7 @@ t_s_mime() {
+       # Sign/verify
+       echo bla | ${MAILX} ${ARGS} \
+          -Ssmime-sign -Ssmime-sign-cert=./.tpair.pem -Sfrom=test@localhost \
+-         -Ssmime-sign-digest=sha1 \
++         -Ssmime-sign-digest=sha256 \
+          -S password-test@localhost.smime-cert-key=${_pass} \
+          -s 'S/MIME test' ./.VERIFY >>${ERR} 2>&1
+       check_ex0 ${_z}-estat
+@@ -10028,7 +10028,7 @@ t_s_mime() {
+          { if(!skip) print }
+       ' \
+          < ./.VERIFY > "${MBOX}"
+-      check ${_z} - "${MBOX}" '335634014 644'
++      check ${_z} - "${MBOX}" '374578409 646'
+       _z=`add ${_z} 1`
+ 
+       printf 'verify\nx\n' |
+@@ -10046,7 +10046,7 @@ t_s_mime() {
+       ${MAILX} ${ARGS} \
+          -Smta=test://./.ENCRYPT \
+          -Ssmime-force-encryption -Ssmime-encrypt-recei@ver.com=./.tpair.pem \
+-         -Ssmime-sign-digest=sha1 \
++         -Ssmime-sign-digest=sha256 \
+          -Ssmime-sign -Ssmime-sign-cert=./.tpair.pem -Sfrom=test@localhost \
+          -S password-test@localhost.smime-cert-key=${_pass} \
+          -s 'S/MIME test' recei@ver.com >>${ERR} 2>&1
+@@ -10071,7 +10071,7 @@ t_s_mime() {
+          { if(!skip) print }
+       ' \
+          < ./.DECRYPT > "${MBOX}"
+-      check ${_z} - "${MBOX}" '2602978204 940'
++      check ${_z} - "${MBOX}" '101680387 942'
+       _z=`add ${_z} 1`
+ 
+       (openssl smime -decrypt ${_ossl} -inkey ./.tkey.pem -in ./.ENCRYPT |
+
