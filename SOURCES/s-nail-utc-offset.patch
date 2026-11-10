@@ -1,0 +1,375 @@
+From 60ed19eed59a13f494bf0880e132208a9f4c6bc1 Mon Sep 17 00:00:00 2001
+From: Steffen Nurpmeso <steffen@sdaoden.eu>
+Date: Sun, 7 Nov 2021 02:43:37 +0100
+Subject: [PATCH] FIX UTC offset "calculation" (Andrea Biardi)..
+
+Andrea (thanks!) reported to the ML:
+
+  Looking at the source of s-nail, I tracked it all down to a
+  naive/incorrect handling of tm->tm_isdst in mkdate() in sendout.c (the
+  same logic appears in other places, for example see the comment in
+  src/mx/header.c that reads "/* TODO simply adding an hour for ISDST
+  is .. buuh */".)
+
+Yeah the issue was known, but i hoped for SU tools.. whatever.
+
+  After a lot of research (and I feel I've become an expert on the
+  subject by now!) this is what I've found:
+
+  In 2018, the tzdata maintainers (IANA) corrected a historical mistake
+  with the Europe/Dublin timezone. The mistake was rooted in a
+  misunderstanding of whether IST meant "Irish Summer Time" or "Irish
+  Standard Time".
+
+  The problem was discussed at great length
+  (http://mm.icann.org/pipermail/tz/2018-January/thread.html) and it was
+  concluded that IST really meant Irish *Standard* Time (in constrast
+  with, say, British *Summer* Time), and that this standard time is
+  defined as UTC+0100.
+
+  This corresponds to the article at
+  https://en.wikipedia.org/wiki/Time_in_the_Republic_of_Ireland and the
+  notes at https://en.wikipedia.org/wiki/Winter_time_(clock_lag); the
+  source archive of tzdata has a long section dedicated to this problem
+  and a large set of official references and links to
+  www.irishstatutebook.ie.
+
+  Once the question was settled, the only possible solution for keeping
+  the Irish local time in sync with the rest of the world (for example,
+  Belfast & London) was for IANA to _reverse_ the functioning of the DST
+  flag for Ireland. The result is that in the current IANA timezone
+  database (2021e), Europe/Dublin has DST applied in *winter*, with an
+  adjustment of -1h (that is, negative).
+
+  Digging deeper, one uncovers that there are a few other countries that
+  have (or once had) the same time-switch mechanism as Ireland;
+  amongst others, https://github.com/MenoData/Time4J/issues/742 also
+  concedes that negative DST is a reality.
+
+  In s-nail, the logic that works out the UTC offset does the right
+  thing in my testcase (october 2021, Ireland = UTC+0100), but then upon
+  inspecting tm->tm_isdst it sees that DST is in effect (remember,
+  flag has been reversed, so DST in Ireland is on in winter time) it adds
+  one hour (it should subtract one, because the adjustment is negative).
+
+  That's why I get a +0200 instead of +0000 out of s-nail.
+
+  You may wonder why this problem hasn't been noticed by Irish people in
+  the past three years (hey, there's quite an IT industry over here!).
+
+  It turns out that the introduction of a negative DST adjustment caused
+  all sorts of bugs back in 2018; in the source distribution of IANA's
+  tzdata, one can spot this inside ./europe:
+
+    # In January 2018 we discovered that the negative SAVE values in the
+    # Eire rules cause problems with tests for ICU [...] and with tests
+    # for OpenJDK [...]
+    # To work around this problem, the build procedure can translate the
+    # following data into two forms, one with negative SAVE values and the
+    # other form with a traditional approximation for Irish timestamps
+    # after 1971-10-31 02:00 UTC; although this approximation has tm_isdst
+    # flags that are reversed, its UTC offsets are correct and this often
+    # suffices.  This source file currently uses only nonnegative SAVE
+    # values, but this is intended to change and downstream code should
+    # not rely on it.
+
+  So, a temporary hack was put in place in order to allow distro
+  maintainers to retain the old broken convention of IST and support
+  buggy software, but it is clear that the current (and technically, and
+  politically, correct) implementation of a negative DST adjustment for
+  Ireland is there to stay.
+
+  As a matter of fact, the distro maintainer can choose to compile
+  tzdata to keep buggy software happy ("make DATAFORM=rearguard"),
+  which replicates the behaviour of tzdata prior to 2018. Many distros
+  seem to be doing that for one reason or another, while some have passed
+  the upstream change down to their users (probably, without knowing).
+
+  (also, remember that the IANA tz database is basically the only source
+  of tz data and is used globally by pretty much anybody who has a system
+  clock; I can see why embedded platforms may not be easy to patch to
+  support the negative DST adjustment).
+
+  This explains why I see this problem in Slackware, but not on, for
+  example, CentOS (and also why some tools work correctly, and some, like
+  s-nail in this case, does not).
+
+  I am in the process of evaluating different approaches to solve this
+  bug in a portable way (e.g. without relying on non-standard extensions
+  like tm->tm_gmtoff, strftime's "%z" or timelocal()/gmtime()).
+
+He then also mentioned
+
+tm_gmtoff seems like the easiest way. If you're interested in
+portability, the only *portable* way of finding the offset from UTC
+that I've found is:
+
+     struct tm l,g;
+     g = *gmtime(&t);
+     l = *localtime(&t);
+
+  and work out the difference between g and l by checking the members
+  (e.g. normalizing to either number of minutes) with something like:
+
+    diff = (l->tm_sec-g->tm_sec)/60
+    +(l->tm_min-g->tm_min)
+    +(l->tm_hour-g->tm_hour)*60
+    /* + compensate for day/month/year difference */
+
+And that is an interesting approach that in one way or another
+other MUAs have gone.  Do so, too!
+
+Many thanks for the effort, Andrea.
+---
+ include/mx/nailfuns.h |  5 +++++
+ mk/make-config.sh     | 10 +++++++++
+ src/mx/auxlily.c      | 47 +++++++++++++++++++++++++++++++++++++++++++
+ src/mx/header.c       | 16 +++++----------
+ src/mx/imap-search.c  | 19 +++++++----------
+ src/mx/obs-imap.c     | 18 ++++++-----------
+ src/mx/sendout.c      | 14 ++++++-------
+ 7 files changed, 87 insertions(+), 42 deletions(-)
+
+diff --git a/include/mx/nailfuns.h b/include/mx/nailfuns.h
+index 9c1f2a58..f912944b 100644
+--- a/include/mx/nailfuns.h
++++ b/include/mx/nailfuns.h
+@@ -294,6 +294,11 @@ FL struct n_timespec const *n_time_now(boole force_update);
+ FL void        time_current_update(struct time_current *tc,
+                   boole full_update);
+ 
++/* TZ difference in seconds.
++ * secsepoch is only used if any of the tm's is NIL. */
++FL s32 n_time_tzdiff(s64 secsepoch, struct tm const *utcp_or_nil,
++      struct tm const *localp_or_nil);
++
+ /* ctime(3), but do ensure 26 byte limit, do not crash XXX static buffer.
+  * NOTE: no trailing newline */
+ FL char *n_time_ctime(s64 secsepoch, struct tm const *localtime_or_nil);
+diff --git a/mk/make-config.sh b/mk/make-config.sh
+index 434a9039..ea822428 100644
+--- a/mk/make-config.sh
++++ b/mk/make-config.sh
+@@ -2104,6 +2104,16 @@ int main(void){
+    fi
+ fi
+ 
++link_check tm_gmtoff 'struct tm::tm_gmtoff' '#define mx_HAVE_TM_GMTOFF' << \!
++#include <time.h>
++int main(void){
++   time_t t;
++
++   t = time((void*)0);
++   return gmtime(&t)->tm_gmtoff != 0;
++}
++!
++
+ ##
+ ## optional and selectable
+ ##
+diff --git a/src/mx/auxlily.c b/src/mx/auxlily.c
+index 54b89d50..bf386815 100644
+--- a/src/mx/auxlily.c
++++ b/src/mx/auxlily.c
+@@ -743,6 +743,53 @@ jredo:
+    NYD_OU;
+ }
+ 
++FL s32
++n_time_tzdiff(s64 secsepoch, struct tm const *utcp_or_nil,
++      struct tm const *localp_or_nil){
++   struct tm tmbuf[2], *tmx;
++   time_t t;
++   s32 rv;
++   NYD2_IN;
++   UNUSED(utcp_or_nil);
++
++   rv = 0;
++
++   if(localp_or_nil == NIL){
++      t = S(time_t,secsepoch);
++      if((tmx = localtime(&t)) == NIL)
++         goto jleave;
++      tmbuf[0] = *tmx;
++      localp_or_nil = &tmbuf[0];
++   }
++
++#ifdef mx_HAVE_TM_GMTOFF
++   rv = localp_or_nil->tm_gmtoff;
++
++#else
++   if(utcp_or_nil == NIL){
++      t = S(time_t,secsepoch);
++      if((tmx = gmtime(&t)) == NIL)
++         goto jleave;
++      tmbuf[1] = *tmx;
++      utcp_or_nil = &tmbuf[1];
++   }
++
++   rv = ((((localp_or_nil->tm_hour - utcp_or_nil->tm_hour) * 60) +
++         (localp_or_nil->tm_min - utcp_or_nil->tm_min)) * 60) +
++         (localp_or_nil->tm_sec - utcp_or_nil->tm_sec);
++
++   if((t = (localp_or_nil->tm_yday - utcp_or_nil->tm_yday)) != 0){
++      s32 const ds = 24 * 60 * 60;
++
++      rv += (t == 1) ? ds : -S(s32,ds);
++   }
++#endif
++
++jleave:
++   NYD2_OU;
++   return rv;
++}
++
+ FL char *
+ n_time_ctime(s64 secsepoch, struct tm const *localtime_or_nil){/* TODO err*/
+    /* Problem is that secsepoch may be invalid for representation of ctime(3),
+diff --git a/src/mx/header.c b/src/mx/header.c
+index b2d727dc..91947107 100644
+--- a/src/mx/header.c
++++ b/src/mx/header.c
+@@ -2748,9 +2748,8 @@ FL time_t
+ unixtime(char const *fromline)
+ {
+    char const *fp, *xp;
+-   time_t t, t2;
+-   s32 i, year, month, day, hour, minute, second, tzdiff;
+-   struct tm *tmptr;
++   time_t t;
++   s32 i, year, month, day, hour, minute, second;
+    NYD2_IN;
+ 
+    for (fp = fromline; *fp != '\0' && *fp != '\n'; ++fp)
+@@ -2786,14 +2785,9 @@ unixtime(char const *fromline)
+       goto jinvalid;
+    if ((t = combinetime(year, month, day, hour, minute, second)) == (time_t)-1)
+       goto jinvalid;
+-   if((t2 = mktime(gmtime(&t))) == (time_t)-1)
+-      goto jinvalid;
+-   tzdiff = t - t2;
+-   if((tmptr = localtime(&t)) == NULL)
+-      goto jinvalid;
+-   if (tmptr->tm_isdst > 0)
+-      tzdiff += 3600; /* TODO simply adding an hour for ISDST is .. buuh */
+-   t -= tzdiff;
++
++   t += n_time_tzdiff(t, NIL, NIL);
++
+ jleave:
+    NYD2_OU;
+    return t;
+diff --git a/src/mx/imap-search.c b/src/mx/imap-search.c
+index 3b129255..458c6a29 100644
+--- a/src/mx/imap-search.c
++++ b/src/mx/imap-search.c
+@@ -615,9 +615,8 @@ jleave:
+ static time_t
+ _imap_read_date(char const *cp)
+ {
+-   time_t t, t2;
+-   s32 year, month, day, i, tzdiff;
+-   struct tm *tmptr;
++   time_t t;
++   s32 year, month, day, i;
+    char const *xp, *yp;
+    NYD_IN;
+ 
+@@ -641,16 +640,12 @@ _imap_read_date(char const *cp)
+       goto jerr;
+    if (yp[0] != '\0' && (yp[1] != '"' || yp[2] != '\0'))
+       goto jerr;
+-   if ((t = combinetime(year, month, day, 0, 0, 0)) == (time_t)-1)
++
++   if((t = combinetime(year, month, day, 0, 0, 0)) == (time_t)-1)
+       goto jleave/*jerr*/;
+-   if((t2 = mktime(gmtime(&t))) == (time_t)-1)
+-      goto jerr;
+-   tzdiff = t - t2;
+-   if((tmptr = localtime(&t)) == NULL)
+-      goto jerr;
+-   if (tmptr->tm_isdst > 0)
+-      tzdiff += 3600;
+-   t -= tzdiff;
++
++   t += n_time_tzdiff(t, NIL, NIL);
++
+ jleave:
+    NYD_OU;
+    return t;
+diff --git a/src/mx/obs-imap.c b/src/mx/obs-imap.c
+index 095a594a..230599f4 100644
+--- a/src/mx/obs-imap.c
++++ b/src/mx/obs-imap.c
+@@ -4615,26 +4615,19 @@ imap_make_date_time(time_t t)
+    char const *mn;
+    s32 y, md, th, tm, ts;
+    struct tm *tmp;
+-   int tzdiff, tzdiff_hour, tzdiff_min;
+-   time_t t2;
++   int tzdiff_hour, tzdiff_min;
+    NYD2_IN;
+ 
+ jredo:
+-   if((t2 = mktime(gmtime(&t))) == (time_t)-1){
+-      t = 0;
+-      goto jredo;
+-   }
+-   tzdiff = t - t2;
+    if((tmp = localtime(&t)) == NULL){
+       t = 0;
+       goto jredo;
+    }
+ 
+-   tzdiff_hour = (int)(tzdiff / 60);
+-   tzdiff_min = tzdiff_hour % 60;
+-   tzdiff_hour /= 60;
+-   if (tmp->tm_isdst > 0)
+-      tzdiff_hour++;
++   tzdiff_min = S(int,n_time_tzdiff(t, NIL, tmp));
++   tzdiff_min /= 60; /* TODO su_TIME_MIN_SECS */
++   tzdiff_hour = tzdiff_min / 60;
++   tzdiff_min %= 60; /* TODO su_TIME_HOUR_MINS */
+ 
+    if(UNLIKELY((y = tmp->tm_year) < 0 || y >= 9999/*S32_MAX*/ - 1900)){
+       y = 1970;
+@@ -4659,6 +4652,7 @@ jredo:
+ 
+    snprintf(s, sizeof s, "\"%02d-%s-%04d %02d:%02d:%02d %+03d%02d\"",
+          md, mn, y, th, tm, ts, tzdiff_hour, tzdiff_min);
++
+    NYD2_OU;
+    return s;
+ }
+diff --git a/src/mx/sendout.c b/src/mx/sendout.c
+index 00dab059..0eb734d8 100644
+--- a/src/mx/sendout.c
++++ b/src/mx/sendout.c
+@@ -2435,17 +2435,17 @@ FL int
+ mkdate(FILE *fo, char const *field)
+ {
+    struct tm tmpgm, *tmptr;
+-   int tzdiff, tzdiff_hour, tzdiff_min, rv;
++   int tzdiff_hour, tzdiff_min, rv;
+    NYD_IN;
+ 
+    su_mem_copy(&tmpgm, &time_current.tc_gm, sizeof tmpgm);
+-   tzdiff = time_current.tc_time - mktime(&tmpgm);
+-   tzdiff_hour = (int)(tzdiff / 60);
+-   tzdiff_min = tzdiff_hour % 60;
+-   tzdiff_hour /= 60;
+    tmptr = &time_current.tc_local;
+-   if (tmptr->tm_isdst > 0)
+-      ++tzdiff_hour;
++
++   tzdiff_min = S(int,n_time_tzdiff(time_current.tc_time, NIL, tmptr));
++   tzdiff_min /= 60; /* TODO su_TIME_MIN_SECS */
++   tzdiff_hour = tzdiff_min / 60;
++   tzdiff_min %= 60; /* TODO su_TIME_HOUR_MINS */
++
+    rv = fprintf(fo, "%s: %s, %02d %s %04d %02d:%02d:%02d %+05d\n",
+          field,
+          n_weekday_names[tmptr->tm_wday],
+-- 
+2.54.0
+

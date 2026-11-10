@@ -1,6 +1,6 @@
 Name:           s-nail
 Version:        14.9.22
-Release:        9%{?dist}
+Release:        10%{?dist}
 Summary:        Environment for sending and receiving mail
 
 # Everything is ISC except parts coming from the original Heirloom mailx which are BSD
@@ -15,6 +15,8 @@ Source2:        steffen.asc
 Patch0:		s-nail-testsuite.patch
 # upstream commit https://github.com/sdaoden/s-mailx/commit/c3ef40c2b63ad7785571802c4100581ebf228a1f.patch
 Patch1:		s-nail-bcc-in-subject.patch
+# upstream commit https://github.com/sdaoden/s-mailx/commit/60ed19eed59a13f494bf0880e132208a9f4c6bc1.patch
+Patch2:		s-nail-utc-offset.patch
 
 BuildRequires: make
 BuildRequires:  gnupg2
@@ -142,6 +144,10 @@ fi
 
 
 %changelog
+* Fri Aug 14 2026 Tomas Korbar <tkorbar@redhat.com> - 14.9.22-10
+- Fix UTC offset calculation in Date headers
+- Resolves: RHEL-240793
+
 * Wed Oct 29 2025 Tomas Korbar <tkorbar@redhat.com> - 14.9.22-9
 - Stop adding BCC lines to subject
 - Resolves: RHEL-110823
